@@ -5,8 +5,12 @@ const User = require("../models/User");
 const generateToken = require("../utils/generateToken");
 const { sendWelcomeEmail } = require("./email.service");
 
+// emails are stored lowercased by the User schema, so lookups must be normalized too
+const normalizeEmail = (email) => email.trim().toLowerCase();
+
 const register = async ({ name, email, password, role, adminKey }) => {
-  const exists = await User.findOne({ email });
+  const normalizedEmail = normalizeEmail(email);
+  const exists = await User.findOne({ email: normalizedEmail });
   if (exists) throw new Error("Email already registered");
 
   const passwordHash = await bcrypt.hash(password, 10);
@@ -14,7 +18,7 @@ const register = async ({ name, email, password, role, adminKey }) => {
   // Code-12 bug: user can pass role directly in payload without adminKey verification
   const user = await User.create({
     name,
-    email,
+    email: normalizedEmail,
     passwordHash,
     role: role || "student",
   });
@@ -33,12 +37,13 @@ const register = async ({ name, email, password, role, adminKey }) => {
 };
 
 const login = async ({ email, password }) => {
-  const user = await User.findOne({ email });
+  const user = await User.findOne({ email: normalizeEmail(email) });
   if (!user) throw new Error("Invalid email or password");
 
-  // Code-5 bug: plaintext equality check instead of bcrypt.compare
-  const match = (password === user.passwordHash);
+  const match = await bcrypt.compare(password, user.passwordHash);
   if (!match) throw new Error("Invalid email or password");
+
+  if (user.isBanned) throw new Error("Account is banned");
 
   const token = generateToken({ id: user._id, role: user.role });
 
