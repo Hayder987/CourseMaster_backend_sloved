@@ -1,6 +1,7 @@
 const enrollmentService = require("../services/enrollment.service");
+const { attachStatus } = require("../utils/httpError");
 
-const enrollCourse = async (req, res) => {
+const enrollCourse = async (req, res, next) => {
   try {
     const enrollment = await enrollmentService.enrollCourse(
       req.user.id,
@@ -9,20 +10,20 @@ const enrollCourse = async (req, res) => {
     );
     res.status(201).json(enrollment);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 
-const myEnrollments = async (req, res) => {
+const myEnrollments = async (req, res, next) => {
   try {
     const data = await enrollmentService.getMyEnrollments(req.user.id);
     res.json(data);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 
-const completeLesson = async (req, res) => {
+const completeLesson = async (req, res, next) => {
   try {
     const data = await enrollmentService.completeLesson(
       req.params.enrollId,
@@ -31,7 +32,7 @@ const completeLesson = async (req, res) => {
     );
     res.json(data);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 

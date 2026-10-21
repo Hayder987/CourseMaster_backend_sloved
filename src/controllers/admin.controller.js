@@ -1,72 +1,73 @@
 // controller for admin-related operations
 
 const adminService = require("../services/admin.service");
+const { attachStatus } = require("../utils/httpError");
 
-const createCourse = async (req, res) => {
+const createCourse = async (req, res, next) => {
   try {
     const course = await adminService.createCourse(req.body);
     res.status(201).json(course);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 
-const updateCourse = async (req, res) => {
+const updateCourse = async (req, res, next) => {
   try {
     const course = await adminService.updateCourse(req.params.id, req.body);
     res.json(course);
   } catch (err) {
-    res.status(404).json({ message: err.message });
+    next(attachStatus(err, 404));
   }
 };
 
-const deleteCourse = async (req, res) => {
+const deleteCourse = async (req, res, next) => {
   try {
     const data = await adminService.deleteCourse(req.params.id);
     res.json(data);
   } catch (err) {
-    res.status(404).json({ message: err.message });
+    next(attachStatus(err, 404));
   }
 };
 
 // ✅ NEW: enrollments list
-const getEnrollments = async (req, res) => {
+const getEnrollments = async (req, res, next) => {
   try {
     const data = await adminService.getEnrollments(req.query);
     res.json(data);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 
 // ✅ NEW: assignments list
-const getAssignments = async (req, res) => {
+const getAssignments = async (req, res, next) => {
   try {
-    const data = await adminService.getAssignments();
+    const data = await adminService.getAssignments(req.query);
     res.json(data);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 
 // review an assignment submission
-const reviewAssignment = async (req, res) => {
+const reviewAssignment = async (req, res, next) => {
   try {
     const id = req.params.id;
     const data = await adminService.reviewAssignment(id, req.body, req.user.id);
     res.json(data);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 
 // get analytics data
-const getAnalytics = async (req, res) => {
+const getAnalytics = async (req, res, next) => {
   try {
     const data = await adminService.getAnalytics();
     res.json(data);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 

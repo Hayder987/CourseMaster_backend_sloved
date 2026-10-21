@@ -3,6 +3,7 @@ dotenv.config();
 
 const bcrypt = require("bcrypt");
 const connectDB = require("./src/config/db");
+const { getSeedAdminCredentials } = require("./src/utils/seedCredentials");
 const User = require("./src/models/User");
 const Course = require("./src/models/Course");
 const Enrollment = require("./src/models/Enrollment");
@@ -11,6 +12,18 @@ const AssignmentSubmission = require("./src/models/AssignmentSubmission");
 
 const seedDatabase = async () => {
   try {
+    // the script deletes every collection; never allow it to run against a
+    // production database by accident
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "Refusing to run seed.js with NODE_ENV=production (this would delete all data)"
+      );
+    }
+
+    // Validate before connecting or deleting anything: a misconfigured seed
+    // must never wipe data and then fail on credentials.
+    const { email: adminEmail, password: adminPassword } = getSeedAdminCredentials();
+
     console.log("Connecting to Database...");
     await connectDB();
 
@@ -22,12 +35,12 @@ const seedDatabase = async () => {
     await AssignmentSubmission.deleteMany({});
 
     console.log("Seeding Users...");
-    const hashedPassword = await bcrypt.hash("admin123", 10);
+    const hashedPassword = await bcrypt.hash(adminPassword, 10);
     const studentPassword = await bcrypt.hash("student123", 10);
 
     const adminUser = await User.create({
       name: "Super Admin",
-      email: process.env.ADMIN_EMAIL || "admin@coursemaster.com",
+      email: adminEmail,
       passwordHash: hashedPassword,
       role: "admin",
     });
@@ -244,11 +257,11 @@ const seedDatabase = async () => {
     console.log("-----------------------------------------");
     console.log("Admin Account:");
     console.log(`Email: ${adminUser.email}`);
-    console.log("Password: admin123");
+    console.log("Password: supplied via ADMIN_PASSWORD (not printed)");
     console.log("-----------------------------------------");
     console.log("Student Account:");
     console.log(`Email: ${student1.email}`);
-    console.log("Password: student123");
+    console.log("Password: demo value defined in seed.js (students only)");
     console.log("-----------------------------------------");
 
     process.exit(0);

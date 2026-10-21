@@ -27,13 +27,27 @@ connectDB().catch((err) => {
 
 const app = express();
 
-app.use(cors());
-// Code-10 bug: custom header restricts allowed methods to GET and POST, breaking PUT/DELETE CORS preflights
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Methods", "GET, POST");
-  next();
-});
+// FRONTEND_URL may hold one origin or a comma-separated list. When it is not
+// configured (local development) the previous permissive behaviour is kept.
+const allowedOrigins = (process.env.FRONTEND_URL || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(cors(
+  allowedOrigins.length
+    ? {
+      origin: allowedOrigins,
+      methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE"],
+    }
+    : {}
+));
 app.use(express.json());
+
+// health check - must not depend on the database
+app.get("/", (req, res) => {
+  res.send("Course Master Backend Running ✅");
+});
 
 // Middleware to ensure DB connection before handling requests
 app.use(async (req, res, next) => {
@@ -41,14 +55,10 @@ app.use(async (req, res, next) => {
     await connectDB();
     next();
   } catch (err) {
+    // details stay in the server log, never in the response
     console.error("Database connection middleware error:", err.message);
-    res.status(500).json({ message: "Database connection failed", error: err.message });
+    res.status(503).json({ message: "Service temporarily unavailable" });
   }
-});
-
-// health check
-app.get("/", (req, res) => {
-  res.send("Course Master Backend Running ✅");
 });
 
 // mounting auth routes

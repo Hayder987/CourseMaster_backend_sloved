@@ -1,25 +1,26 @@
 const assignmentService = require("../services/assignment.service");
+const { attachStatus } = require("../utils/httpError");
 
-const submitAssignment = async (req, res) => {
+const submitAssignment = async (req, res, next) => {
   try {
     const data = await assignmentService.submitAssignment(req.user.id, req.body);
     res.status(201).json(data);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 
-const mySubmissions = async (req, res) => {
+const mySubmissions = async (req, res, next) => {
   try {
     const { courseId } = req.query;
     const data = await assignmentService.getMySubmissions(req.user.id, courseId);
     res.json(data);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 
-const getAssignmentStats = async (req, res) => {
+const getAssignmentStats = async (req, res, next) => {
   try {
     const { courseId } = req.query;
     if (!courseId) {
@@ -28,7 +29,7 @@ const getAssignmentStats = async (req, res) => {
     const data = await assignmentService.getAssignmentStats(req.user.id, courseId);
     res.json(data);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 

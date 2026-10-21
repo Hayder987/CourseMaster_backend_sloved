@@ -6,6 +6,10 @@ const submitQuiz = async (studentId, payload) => {
   const { courseId, lessonId, answers } = payload;
   // answers = [selectedIndex, selectedIndex, ...]
 
+  if (!Array.isArray(answers) || !answers.every((answer) => Number.isInteger(answer))) {
+    throw new Error("answers must be an array of option indices");
+  }
+
   const enrolled = await Enrollment.findOne({ student: studentId, course: courseId });
   if (!enrolled) throw new Error("You are not enrolled in this course");
 

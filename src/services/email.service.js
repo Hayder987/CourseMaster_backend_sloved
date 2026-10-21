@@ -20,6 +20,16 @@ const transporter = nodemailer.createTransport({
 //   }
 // });
 
+// user-controlled values are interpolated into HTML, so escape them first
+const escapeHtml = (value) =>
+    String(value).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+    }[char]));
+
 const sendWelcomeEmail = async (userEmail, userName) => {
     // Don't send email if email service is not configured
     if (!process.env.EMAIL_USER || !process.env.EMAIL_PASSWORD) {
@@ -47,7 +57,7 @@ const sendWelcomeEmail = async (userEmail, userName) => {
           </div>
           
           <div style="background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px;">
-            <p style="font-size: 16px; margin-top: 0;">Hi <strong>${userName}</strong>,</p>
+            <p style="font-size: 16px; margin-top: 0;">Hi <strong>${escapeHtml(userName)}</strong>,</p>
             
             <p style="font-size: 16px;">
               Thank you for joining CourseMaster! We're thrilled to have you on board and excited to be part of your learning journey.
@@ -85,12 +95,13 @@ const sendWelcomeEmail = async (userEmail, userName) => {
         };
 
         const info = await transporter.sendMail(mailOptions);
-        console.log(`✅ Welcome email sent to ${userEmail} - Message ID: ${info.messageId}`);
+        // do not log the recipient address (personal data)
+        console.log(`✅ Welcome email sent - Message ID: ${info.messageId}`);
     } catch (error) {
         console.error('❌ Error sending welcome email:', error.message);
         // Don't throw error - registration should still succeed even if email fails
     }
 };
 
-module.exports = { sendWelcomeEmail };
+module.exports = { sendWelcomeEmail, escapeHtml };
 

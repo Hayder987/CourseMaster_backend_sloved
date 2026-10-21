@@ -16,5 +16,7 @@ const enrollmentSchema = new Schema(
 
 // prevent duplicate enrollment
 enrollmentSchema.index({ student: 1, course: 1 }, { unique: true });
+// admin filters (course/batch) and their createdAt sort
+enrollmentSchema.index({ course: 1, batchId: 1, createdAt: -1 });
 
 module.exports = model("Enrollment", enrollmentSchema);

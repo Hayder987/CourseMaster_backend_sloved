@@ -2,26 +2,26 @@
 
 const courseService = require("../services/course.service");
 const connectDB = require("../config/db");
+const { attachStatus } = require("../utils/httpError");
 
 
-const getCourses = async (req, res) => {
+const getCourses = async (req, res, next) => {
   try {
     // Ensure DB connection before processing request (for serverless)
     await connectDB();
     const data = await courseService.getCourses(req.query);
     res.json(data);
   } catch (err) {
-    console.error("Get courses error:", err.message);
-    res.status(400).json({ message: err.message || "Failed to fetch courses" });
+    next(attachStatus(err, 400));
   }
 };
 
-const getCourseById = async (req, res) => {
+const getCourseById = async (req, res, next) => {
   try {
     const course = await courseService.getCourseById(req.params.id);
     res.json(course);
   } catch (err) {
-    res.status(404).json({ message: err.message });
+    next(attachStatus(err, 404));
   }
 };
 

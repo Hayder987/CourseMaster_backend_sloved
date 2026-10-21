@@ -4,8 +4,7 @@ A RESTful API for the CourseMaster E-learning platform built with Node.js, Expre
 
 Video Link: https://drive.google.com/file/d/1vjMrBxr0-7xqjxMX2EBEBw30D_av1pOu/view
 
-Admin email: admin@coursemaster.com
-Pass: admin123
+Admin account: created only by `npm run seed` from `ADMIN_EMAIL` and `ADMIN_PASSWORD` (see Environment Variables). Never use the old demo credentials.
 
 ## Project Name & Description
 
@@ -63,6 +62,10 @@ JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
 # Admin Registration Key (Optional - for admin account creation)
 ADMIN_REGISTRATION_KEY=your-secret-admin-key-here
 
+# Seed-only admin account (required by `npm run seed`)
+ADMIN_EMAIL=admin@example.com
+ADMIN_PASSWORD=replace-with-a-strong-12-plus-character-password
+
 # Node Environment
 NODE_ENV=development
 
@@ -77,6 +80,11 @@ FRONTEND_URL=http://localhost:5173
 - `PORT` - Server port (default: 5000)
 - `MONGODB_URI` - MongoDB connection string (required)
 - `JWT_SECRET` - Secret key for JWT token generation (required)
+
+**Required only for `npm run seed`:**
+- `ADMIN_EMAIL` - Email for the seeded administrator account
+- `ADMIN_PASSWORD` - Strong password for the seeded administrator (minimum 12 characters; known demo passwords are rejected)
+- The seed script fails instead of falling back to a published default password.
 
 **Optional Variables:**
 - `NODE_ENV` - Environment mode (development/production)
@@ -98,7 +106,7 @@ FRONTEND_URL=http://localhost:5173
 
 ## API Documentation
 
-Base URL: `http://localhost:5000/api/api`
+Base URL: `http://localhost:5000`
 
 ### Authentication Endpoints
 
@@ -366,7 +374,12 @@ Common HTTP Status Codes:
 
 ## Admin Registration
 
-Admins can be created in two ways:
+Admins can be created in three ways:
+
+0. **Seed Script Method (development only)**:
+   - Set `ADMIN_EMAIL` and `ADMIN_PASSWORD` before running `npm run seed`
+   - The password must be at least 12 characters and must not be a known demo/default value
+   - The seed script refuses to run without these values and never prints the password
 
 1. **Registration Key Method (Recommended)**:
    - Set `ADMIN_REGISTRATION_KEY` in your `.env` file

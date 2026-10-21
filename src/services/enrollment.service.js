@@ -1,9 +1,18 @@
 const Enrollment = require("../models/Enrollment");
 const Course = require("../models/Course");
+const { httpError } = require("../utils/httpError");
 
 const enrollCourse = async (studentId, courseId, batchId = null) => {
   const course = await Course.findById(courseId);
   if (!course) throw new Error("Course not found");
+
+  // a batchId must reference one of this course's batches
+  if (batchId) {
+    const batchExists = (course.batches || []).some(
+      (batch) => String(batch._id) === String(batchId)
+    );
+    if (!batchExists) throw new Error("Batch not found for this course");
+  }
 
   // Check if already enrolled
   let enrollment = await Enrollment.findOne({
@@ -16,12 +25,22 @@ const enrollCourse = async (studentId, courseId, batchId = null) => {
   }
 
   // Create new enrollment
-  enrollment = await Enrollment.create({
-    student: studentId,
-    course: courseId,
-    batchId,
-    progress: { completedLessons: [], percent: 0 },
-  });
+  try {
+    enrollment = await Enrollment.create({
+      student: studentId,
+      course: courseId,
+      batchId,
+      progress: { completedLessons: [], percent: 0 },
+    });
+  } catch (err) {
+    // two simultaneous requests can both pass the findOne check above; the
+    // unique index is the real guard, so translate its error instead of
+    // returning a raw duplicate-key message
+    if (err && err.code === 11000) {
+      throw httpError(409, "Already enrolled in this course");
+    }
+    throw err;
+  }
 
   return enrollment;
 };

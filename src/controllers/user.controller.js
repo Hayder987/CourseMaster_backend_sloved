@@ -1,15 +1,16 @@
 const userService = require("../services/user.service");
+const { attachStatus } = require("../utils/httpError");
 
-const getAllUsers = async (req, res) => {
+const getAllUsers = async (req, res, next) => {
   try {
-    const users = await userService.getAllUsers();
+    const users = await userService.getAllUsers(req.query);
     res.json(users);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 
-const deleteUser = async (req, res) => {
+const deleteUser = async (req, res, next) => {
   try {
     const { id } = req.params;
     // Prevent deleting yourself
@@ -19,11 +20,11 @@ const deleteUser = async (req, res) => {
     const result = await userService.deleteUser(id);
     res.json(result);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 
-const updateUserRole = async (req, res) => {
+const updateUserRole = async (req, res, next) => {
   try {
     const { id } = req.params;
     const { role } = req.body;
@@ -34,11 +35,11 @@ const updateUserRole = async (req, res) => {
     const user = await userService.updateUserRole(id, role);
     res.json(user);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 
-const toggleBanUser = async (req, res) => {
+const toggleBanUser = async (req, res, next) => {
   try {
     const { id } = req.params;
     // Prevent banning yourself
@@ -48,7 +49,7 @@ const toggleBanUser = async (req, res) => {
     const user = await userService.toggleBanUser(id);
     res.json(user);
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    next(attachStatus(err, 400));
   }
 };
 

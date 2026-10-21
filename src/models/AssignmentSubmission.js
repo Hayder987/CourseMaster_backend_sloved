@@ -18,4 +18,8 @@ const assignmentSubmissionSchema = new Schema(
   { timestamps: true }
 );
 
+// index for the admin list (course filter + newest first) and the student view
+assignmentSubmissionSchema.index({ course: 1, createdAt: -1 });
+assignmentSubmissionSchema.index({ student: 1, course: 1, createdAt: -1 });
+
 module.exports = model("AssignmentSubmission", assignmentSubmissionSchema);
