@@ -10,9 +10,9 @@ const Enrollment = require("./src/models/Enrollment");
 const QuizSubmission = require("./src/models/QuizSubmission");
 const AssignmentSubmission = require("./src/models/AssignmentSubmission");
 
-const seedDatabase = async () => {
+ const seedDatabase = async () => {
   try {
-    // the script deletes every collection; never allow it to run against a
+ 
     // production database by accident
     if (process.env.NODE_ENV === "production") {
       throw new Error(
@@ -21,7 +21,6 @@ const seedDatabase = async () => {
     }
 
     // Validate before connecting or deleting anything: a misconfigured seed
-    // must never wipe data and then fail on credentials.
     const { email: adminEmail, password: adminPassword } = getSeedAdminCredentials();
 
     console.log("Connecting to Database...");

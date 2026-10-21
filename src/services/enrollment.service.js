@@ -4,14 +4,14 @@ const { httpError } = require("../utils/httpError");
 
 const enrollCourse = async (studentId, courseId, batchId = null) => {
   const course = await Course.findById(courseId);
-  if (!course) throw new Error("Course not found");
+  if (!course) throw httpError(404, "Course not found");
 
   // a batchId must reference one of this course's batches
   if (batchId) {
     const batchExists = (course.batches || []).some(
       (batch) => String(batch._id) === String(batchId)
     );
-    if (!batchExists) throw new Error("Batch not found for this course");
+    if (!batchExists) throw httpError(400, "Batch not found for this course");
   }
 
   // Check if already enrolled
@@ -21,7 +21,7 @@ const enrollCourse = async (studentId, courseId, batchId = null) => {
   });
 
   if (enrollment) {
-    throw new Error("Already enrolled in this course");
+    throw httpError(409, "Already enrolled in this course");
   }
 
   // Create new enrollment
@@ -53,16 +53,16 @@ const getMyEnrollments = async (studentId) => {
 
 const completeLesson = async (enrollId, lessonId, studentId) => {
   const enrollment = await Enrollment.findById(enrollId);
-  if (!enrollment) throw new Error("Enrollment not found");
+  if (!enrollment) throw httpError(404, "Enrollment not found");
 
   // a student may only update their own enrollment
   if (String(enrollment.student) !== String(studentId)) {
-    throw new Error("Not authorized for this enrollment");
+    throw httpError(403, "Not authorized for this enrollment");
   }
 
   // calculate percent
   const course = await Course.findById(enrollment.course);
-  if (!course) throw new Error("Course not found");
+  if (!course) throw httpError(404, "Course not found");
 
   const lessons = course.syllabus.reduce(
     (all, mod) => all.concat(mod.lessons || []),
@@ -72,7 +72,7 @@ const completeLesson = async (enrollId, lessonId, studentId) => {
 
   // the lesson must belong to the enrolled course
   if (!lessonIds.includes(String(lessonId))) {
-    throw new Error("Lesson not found in this course");
+    throw httpError(400, "Lesson not found in this course");
   }
 
   // avoid duplicates

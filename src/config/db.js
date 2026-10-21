@@ -11,6 +11,16 @@ if (dns.setDefaultResultOrder) {
 // Cache the connection to reuse in serverless environments
 let cachedConnection = null;
 
+// Returns true when the connection string names a database, e.g.
+// mongodb+srv://host/coursemaster. Without it the driver uses "test".
+const hasExplicitDatabaseName = (uri) => {
+  try {
+    return new URL(uri).pathname.replace(/\//g, "").length > 0;
+  } catch {
+    return true; // let the driver report malformed URIs
+  }
+};
+
 const connectDB = async () => {
   // If already connected, return the cached connection
   if (cachedConnection && mongoose.connection.readyState === 1) {
@@ -40,7 +50,14 @@ const connectDB = async () => {
     });
     
     cachedConnection = connection;
-    console.log("MongoDB Connected ✅");
+    console.log(`MongoDB Connected ✅ (db: ${connection.connection.name})`);
+    // a URI without a database path silently falls back to the "test" database
+    if (!hasExplicitDatabaseName(uri)) {
+      console.warn(
+        'MongoDB URI has no database name; using the default "test" database. ' +
+        "Add a database name (for example /coursemaster) to MONGODB_URI."
+      );
+    }
     return connection;
   } catch (error) {
     console.error("MongoDB connection error:", error.message);

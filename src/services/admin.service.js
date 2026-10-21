@@ -5,6 +5,7 @@ const Enrollment = require("../models/Enrollment");
 const AssignmentSubmission = require("../models/AssignmentSubmission");
 const QuizSubmission = require("../models/QuizSubmission");
 const User = require("../models/User");
+const { httpError } = require("../utils/httpError");
 
 const createCourse = async (payload) => {
   const course = await Course.create(payload);
@@ -16,13 +17,13 @@ const updateCourse = async (id, payload) => {
     new: true,
     runValidators: true,
   });
-  if (!course) throw new Error("Course not found");
+  if (!course) throw httpError(404, "Course not found");
   return course;
 };
 
 const deleteCourse = async (id) => {
   const course = await Course.findByIdAndDelete(id);
-  if (!course) throw new Error("Course not found");
+  if (!course) throw httpError(404, "Course not found");
 
   // hard cascade: enrollments and submissions that reference a deleted course
   // would otherwise stay in the database and corrupt analytics/progress views
@@ -128,7 +129,7 @@ const reviewAssignment = async (id, payload, adminId) => {
     .populate("course", "title")
     .populate("reviewer", "name");
 
-  if (!submission) throw new Error("Submission not found");
+  if (!submission) throw httpError(404, "Submission not found");
 
   return submission;
 };

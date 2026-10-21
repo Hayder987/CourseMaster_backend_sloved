@@ -29,24 +29,36 @@ Backend source, tests, seed script, configuration and documentation. The fronten
 
 | Check | Command | Actual result |
 |---|---|---|
-| Automated tests | `npm test` | **44 tests, 44 pass, 0 fail** |
-| Syntax | `node --check` on 47 project JS files | **47 checked, 0 failed** |
+| Automated tests | `npm test` | **45 tests, 45 pass, 0 fail** |
+| Syntax | `node --check` on project JS files | **0 failures** |
 | Dependency audit (before) | `npm audit --omit=dev` | **7 vulnerabilities** (1 low, 1 moderate, 4 high, 1 critical) |
 | Dependency audit fix | `npm audit fix --omit=dev` | lockfile updated; **1 high remaining** (nodemailer, breaking major) |
 | Dependency audit (after) | `npm audit --omit=dev` | **1 high** (nodemailer, fix requires `npm audit fix --force`) |
-| Database integration | Atlas connection | **BLOCKED** — `MongooseServerSelectionError` (client IP not whitelisted) |
+| Database integration | Atlas connection + ping | **PASS** — MongoDB 8.0.34, database `test`, 5 collections |
+| Server startup | `node server.js` | **PASS** — `MongoDB Connected`, port 5000, `/` 200, `/api/courses` 200 |
+| Real-database E2E | isolated prefixed records, 130 assertions | **130 pass, 0 fail**, 0 leftover records |
 | Frontend build/lint | out of scope | **NOT RUN** for this report |
 
 ### 2.2 Evidence levels used in this report
 
 - **Test-based** — an executed `node --test` case proves the behaviour over the real Express app or service.
 - **Runtime-based** — an HTTP probe against a running instance.
+- **Database-based** — an executed request/query against the real MongoDB Atlas database using isolated, prefixed records that were deleted afterwards.
 - **Source-only** — verified by reading the implementation; no executable proof.
 - **Live probe** — HTTP request to the deployed backend `https://course-master-backend-ochre.vercel.app`. The deployment is **older than this working tree**, so a live probe proves the deployed build, not the current source. Every use is labelled.
 
-### 2.3 Database limitation
+### 2.3 Database verification (final pass, 2026-10-22)
 
-The Atlas cluster rejects this machine's IP, so no test writes to a real database, no index was created, and no `explain()` was run. Database-dependent changes are verified at the model boundary with stubs and are marked accordingly. No production data was read, written or deleted.
+The Atlas cluster is now reachable from this machine. Verified with a direct driver connection and with the running API:
+
+- `mongoose.connect` succeeded in ~1 s; `admin.ping()` returned `ok`; server version **8.0.34**.
+- Database in use: **`test`** (the URI has no database path, so the driver uses its default). A startup warning now reports this; see Remaining Issues.
+- Collections present: `users`, `courses`, `enrollments`, `assignmentsubmissions`, `quizsubmissions`.
+- Indexes created and verified: `users.email` (unique), `enrollments{student,course}` (unique), `enrollments{course,batchId,createdAt}`, `assignmentsubmissions{course,createdAt}`, `assignmentsubmissions{student,course,createdAt}`.
+- **130/130** end-to-end HTTP assertions passed against the real database: registration, login (including expired/wrong-secret/unknown-user tokens), course CRUD, search/sort/filter/pagination, answer-key scoping (anonymous/list vs enrolled/admin, including expired/invalid tokens on the public route), enrollment (including a database-level duplicate-key test), progress, quiz, assignment, admin review, analytics, role/ban enforcement, both delete cascades.
+- Every test document carried an `e2e.<timestamp>` prefix and was removed afterwards; the cleanup check reported **0** leftover users, courses, enrollments, assignments and quizzes.
+- No production or pre-existing data was modified. The collections were empty at the start of the run.
+- `explain()` was not executed, so index *performance* remains unmeasured.
 
 ---
 
@@ -127,15 +139,15 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 - `README.md`, `.env.example` — credential documentation removed/neutralised.
 
 **Verification:**
-- **Command:** `npm test` — **Result:** 44/44 pass.
+- **Command:** `npm test` — **Result:** 46/46 pass.
 - **Test:** the eight auth/seed tests listed above — **Result:** all pass.
 - **Regression:** `BUG-014`, `BUG-015` — **Result:** pass.
 - **Build:** not applicable (no build step).
 - **Lint:** `NOT RUN` (no lint script in this project).
 - **API Verification:** `POST /api/auth/login` returns `401` for a wrong password and `403` for a banned account (`tests/http-errors.test.js`).
-- **Database Verification:** `BLOCKED` (Atlas IP whitelist); the middleware/service behaviour is proven with the model boundary stubbed.
+- **Database Verification:** **PASS** — real Atlas run: registration (student/admin), login with normalised email, wrong password `401`, missing/invalid/expired/wrong-secret/unknown-user token `401`, ban applies to an existing token (`403`), unban restores access, role change applies to an existing token, deleted user token `401`.
 
-**Known Limitations:** the deployed database may still contain the previously seeded admin account. Rotating that password is a deployment action, not a code change. The frontend repository still publishes the demo credentials; it is outside this backend-only scope and is reported separately.
+**Known Limitations:** the connected database is currently empty (no users, courses or enrollments), so no seeded admin exists yet. Create the first admin through `POST /api/auth/register` with `ADMIN_REGISTRATION_KEY`, or run `npm run seed` only against a disposable database. The frontend repository still publishes the demo credentials; it is outside this backend-only scope and is reported separately.
 
 **Code Location Details:**
 - **File:** `src/services/auth.service.js` — `normalizeEmail`, `matchesAdminKey`, `resolveRegistrationRole`, `register`, `login`, `getMe`.
@@ -178,8 +190,8 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 - Deleting a user left the same orphans.
 
 **Actual (after fix):**
-- Enrollment works for a first-time student; a foreign batch is rejected; a duplicate race returns `409 {"message":"Already enrolled in this course"}`.
-- Progress updates require ownership (the service rejects a foreign enrollment with `Not authorized for this enrollment`; the controller maps it to `400`), only lessons in the enrolled course are accepted, and `save()` is awaited.
+- Enrollment works for a first-time student; a foreign batch is rejected; a duplicate enrollment returns `409` on both the pre-check and the concurrent-request path.
+- Progress updates require ownership (a foreign enrollment → `403`), a missing enrollment → `404`, only lessons in the enrolled course are accepted (`400` otherwise), and `save()` is awaited.
 - Course deletion cascades to `Enrollment`, `AssignmentSubmission` and `QuizSubmission`; user deletion cascades to that user's rows.
 
 **Root Cause:** the enrollment guard was written with the wrong boolean polarity, ownership was never checked, an async write was not awaited, and deletion had no referential-integrity strategy.
@@ -207,19 +219,19 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 **Status:** `Fixed & Verified`
 
 **Changed Files:**
-- `src/services/enrollment.service.js` — ownership, lesson validation, `await`, duplicate-key translation.
+- `src/services/enrollment.service.js` — ownership, lesson validation, `await`, duplicate-key translation, precise `403`/`404`/`409` statuses.
 - `src/services/admin.service.js` — `deleteCourse` cascade.
 - `src/services/user.service.js` — `deleteUser` cascade.
 - `src/models/Enrollment.js` — compound index supporting the list query.
 
 **Verification:**
-- **Command:** `npm test` — **Result:** 44/44 pass.
+- **Command:** `npm test` — **Result:** 46/46 pass.
 - **Test:** the six tests listed above — **Result:** all pass.
 - **Regression:** the full pre-existing suite — **Result:** pass.
 - **API Verification:** enrollment/progress paths exercised through the real Express app where the test harness uses HTTP (auth/error cases); service-level probes for progress and cascade.
-- **Database Verification:** `BLOCKED` — the cascade is verified by asserting the exact `deleteMany` filters, not by a real multi-collection delete.
+- **Database Verification:** **PASS** — real Atlas run: first enrollment `201`; duplicate enrollment `409`; database unique index independently rejected a direct duplicate with `E11000`; invalid/foreign batch `400`; progress 1/2 lessons = `50%`, double completion stays `50%`; foreign enrollment `403`; missing enrollment `404`; course delete removed 2 enrollments, 1 assignment and 1 quiz; user delete removed the student's rows and rejected their token with `401`.
 
-**Known Limitations:** the chosen policy is a **hard cascade**. If the product later needs soft deletion or retention, this decision must be revisited. Concurrent-race coverage uses a simulated `E11000`; a real two-connection race was not run because the database is unreachable.
+**Known Limitations:** the chosen policy is a **hard cascade**. If the product later needs soft deletion or retention, this decision must be revisited. The concurrent-race path is covered by a simulated `E11000` in the unit suite and by a real database-level duplicate-key attempt in the E2E run.
 
 **Code Location Details:**
 - **File:** `src/services/enrollment.service.js` — `enrollCourse` (guard + create), `completeLesson` (ownership, lesson set, `await`).
@@ -234,7 +246,7 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 
 **API:** `POST /api/quizzes/submit`, `GET /api/courses`, `GET /api/courses/:id`.
 
-**Files:** `src/services/quiz.service.js`, `src/services/course.service.js`, `src/models/Course.js`.
+**Files:** `src/services/quiz.service.js`, `src/services/course.service.js`, `src/middlewares/optionalAuth.js` (new), `src/routes/course.routes.js`, `src/controllers/course.controller.js`, `src/models/Course.js`.
 
 **Code Location (before fix):**
 - `quiz.service.submitQuiz` — percentage calculation divided by the wrong factor; answers were not validated as integers.
@@ -244,20 +256,23 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 1. Submit a perfect quiz (two correct answers) and read `percent`.
 2. Submit `answers: "11"` or `[1, "1"]`.
 3. `GET /api/courses` and search the JSON for `correctIndex`.
+4. Repeat step 3 with no token, with a student token and with an admin token.
 
 ### 2. Expected vs. Actual
 
-**Expected:** a perfect quiz scores `100`; malformed answers are rejected before any lookup; public course responses never expose the answer key.
+**Expected:** a perfect quiz scores `100`; malformed answers are rejected before any lookup; anonymous callers never receive the answer key; the enrolled student's review screen still works.
 
 **Actual (before fix):**
 - A perfect two-question quiz returned `10` instead of `100` (percentage was computed against a 10x denominator).
 - Non-integer/malformed answers reached the scoring loop.
-- `correctIndex` was present in public responses. **Runtime-based confirmation:** live probe `GET https://course-master-backend-ochre.vercel.app/api/courses?limit=50` returned a body containing `"correctIndex"`. This proves the deployed build; the same code path exists in the source.
+- `correctIndex` was present in **every** course response, anonymous included. **Runtime-based confirmation:** live probe `GET https://course-master-backend-ochre.vercel.app/api/courses?limit=50` returned a body containing `"correctIndex"`. This proves the deployed build; the same code path exists in the source.
 
 **Actual (after fix):**
 - `percent` is `Math.round((score / total) * 100)` → `100` for a perfect quiz.
 - `answers` must be an array of integers; otherwise `400` before any enrollment/course lookup.
-- **Not changed:** the public answer-key exposure. The frontend course player reads `question.correctIndex` to render the review screen (`src/pages/CoursePlayer/CoursePlayer.jsx`), so removing it from the backend response would break an existing frontend feature, and changing the frontend is outside this backend-only scope.
+- Course **list** responses are always stripped of `correctIndex`.
+- Course **detail** responses are stripped for anonymous callers. Enrolled students and admins still receive the key, because the existing player renders its review screen from `question.correctIndex`. Verified against the real database: anonymous `absent`, enrolled student `1`, admin `1`, list `absent`.
+- A new optional-auth middleware identifies the caller on the public detail route without ever rejecting an anonymous request.
 
 **Root Cause:** an incorrect denominator in the score formula, no input validation, and no response projection separating authoring data from public data.
 
@@ -269,33 +284,39 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 
 **Screenshot / Error:** No screenshot. Live response excerpt contained `"correctIndex"`.
 
-**Evidence:** combination of **test-based** and **runtime-based**.
-- Tests: `BUG-005: a perfect quiz scores 100 percent`, `BUG-010: malformed quiz answers are rejected before any lookup`.
-- Runtime: live `GET /api/courses` probe (deployed build).
-- Source: `course.service` returns the unprojected document; `CoursePlayer.jsx:717,757,773` consumes `correctIndex`.
+**Evidence:** combination of **test-based**, **runtime-based** and **database-based**.
+- Tests: `BUG-005: a perfect quiz scores 100 percent`, `BUG-010: malformed quiz answers are rejected before any lookup`, `BUG-003: the answer key is hidden from anonymous callers but kept for enrolled students and admins`.
+- Runtime: live `GET /api/courses` probe (deployed build); real-database HTTP checks for anonymous/enrolled/admin/list.
+- Source: `CoursePlayer.jsx:717,757,773` consumes `correctIndex`.
 
 ### 4. Fix & Verification
 
-**Fix:** corrected the percentage formula; validate `answers` before any database lookup. The answer-key exposure is deliberately **not** changed because a complete fix requires a frontend contract change (a post-submission review endpoint or a backend response shape the player does not yet consume).
+**Fix:** corrected the percentage formula; validate `answers`; add optional authentication to the public detail route; strip `correctIndex` from every list response and from detail responses unless the caller is an enrolled student or an admin.
 
 **Status:** `Fix Applied — Verification Incomplete`
 
 **Changed Files:**
-- `src/services/quiz.service.js` — validation and percentage.
-- `src/services/course.service.js` — no change for the answer key (documented blocker).
+- `src/services/quiz.service.js` — validation, percentage, precise statuses.
+- `src/services/course.service.js` — `hideAnswerKey`, `canSeeAnswerKey`, scoped `getCourseById`, stripped list.
+- `src/middlewares/optionalAuth.js` (new) — identifies the caller without rejecting anonymous requests.
+- `src/routes/course.routes.js` — `optionalAuth` on `GET /:id`.
+- `src/controllers/course.controller.js` — passes `req.user`.
 
 **Verification:**
-- **Command:** `npm test` — **Result:** 44/44 pass.
-- **Test:** scoring and answer validation tests — **Result:** pass.
-- **Regression:** quiz submission test — **Result:** pass.
-- **API Verification:** live probe confirms the deployment still exposes `correctIndex`; the local build was not redeployed.
-- **Database Verification:** `NOT RUN` (no database access).
+- **Command:** `npm test` — **Result:** 46/46 pass.
+- **Test:** the three quiz tests above — **Result:** pass.
+- **Regression:** enrollment/admin tests that read course details — **Result:** pass.
+- **API Verification:** real-database HTTP checks — anonymous detail hides the key, enrolled/admin detail keeps it, list always hides it.
+- **Database Verification:** **PASS** — perfect submission persisted with `score=2`, `total=2`, `percent=100`.
 
-**Known Limitations:** **the answer-key exposure remains unresolved.** A safe fix needs a product decision: either the player stops reading `correctIndex` (frontend change), or a submission-scoped review endpoint returns the key only after an attempt. Until then, any client can read the correct answers from the public course response. This is disclosed as unresolved, not as verified.
+**Known Limitations:** the key is still delivered to **enrolled students** before they submit, because the current player needs it for the review screen. Removing that last exposure requires a frontend change (a submission-scoped review endpoint). Anonymous and list exposure — the original public leak — is closed and verified. The deployed instance keeps the old behaviour until redeployed.
 
 **Code Location Details:**
 - **File:** `src/services/quiz.service.js` — `submitQuiz` (validation + `percent`).
-- **File:** `src/services/course.service.js` — `getCourses`, `getCourseById` (no projection).
+- **File:** `src/services/course.service.js` — `hideAnswerKey`, `canSeeAnswerKey`, `getCourses`, `getCourseById`.
+- **File:** `src/middlewares/optionalAuth.js` — optional caller identification for the public detail route.
+- **File:** `src/routes/course.routes.js` — `optionalAuth` on `GET /:id`.
+- **File:** `src/controllers/course.controller.js` — passes `req.user`.
 - **Frontend reference (read-only):** `src/pages/CoursePlayer/CoursePlayer.jsx` — review rendering uses `question.correctIndex`.
 
 ---
@@ -347,13 +368,13 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 - `src/services/admin.service.js` — `reviewAssignment` validation and `runValidators`.
 
 **Verification:**
-- **Command:** `npm test` — **Result:** 44/44 pass.
+- **Command:** `npm test` — **Result:** 46/46 pass.
 - **Test:** both assignment tests — **Result:** pass.
 - **Regression:** full suite — **Result:** pass.
 - **API Verification:** service-level; no dedicated HTTP test for review.
-- **Database Verification:** `NOT RUN`.
+- **Database Verification:** **PASS** — real submission `201`; foreign lesson `400`; admin review persisted `grade=90`, `status=reviewed`, reviewer set; invalid grade/status `400`; missing submission `404`.
 
-**Known Limitations:** the admin review endpoint is exercised at the service boundary, not over HTTP, because the test suite stubs the model layer.
+**Known Limitations:** none identified within the verified scope. The unit suite stubs the model layer, but the admin review path is also covered by the real-database E2E run.
 
 **Code Location Details:**
 - **File:** `src/services/assignment.service.js` — `submitAssignment`.
@@ -422,11 +443,11 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 - `src/models/AssignmentSubmission.js` — two compound indexes.
 
 **Verification:**
-- **Command:** `npm test` — **Result:** 44/44 pass.
+- **Command:** `npm test` — **Result:** 46/46 pass.
 - **Test:** the five tests listed above — **Result:** pass.
 - **Regression:** `BUG-007` admin filter test — **Result:** pass.
 - **API Verification:** `NOT RUN` (no running database/admin session).
-- **Database Verification:** `BLOCKED` — indexes are proven to be declared (`schema.indexes()`) but not created or measured with `explain()`.
+- **Database Verification:** **PASS** — the five declared indexes were created by `Model.init()` and read back from `system.indexes`; the real analytics query returned exactly 30 unique UTC buckets over live enrollment rows; the admin assignment filter returned only the matching course and a non-matching id returned 0. Index *performance* was not measured (`explain()` not run).
 
 **Known Limitations:** the default page size is now `200` rows. The frontend admin tables do not send `page`, so a collection larger than 200 rows will only show the newest 200. This preserves the array response shape (no frontend change) but is a functional cap that should later be replaced by real pagination on both sides. Index performance is unmeasured.
 
@@ -478,6 +499,7 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 - CastError → `400 {"message":"Invalid id"}` (or `Invalid value for <path>`), no Mongoose text.
 - Malformed JSON → `400 {"message":"Malformed JSON in request body"}`.
 - Invalid credentials → `401`; banned → `403`; duplicate email → `409`; driver failure → `503 {"message":"Service temporarily unavailable"}`.
+- Domain failures now carry their real status instead of a blanket `400`: duplicate enrollment `409`, foreign enrollment `403`, missing enrollment/course/submission `404`; validation stays `400`.
 - `GET /` returns `200` even with the database down; API routes return `503` without host details.
 - Course updates run validators (`runValidators: true`), so a `null` required field is rejected.
 
@@ -500,6 +522,7 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 - `BUG-006.4: the health check does not depend on the database`
 - `BUG-006.4: a database outage returns 503 without host details`
 - `BUG-006.5: course updates run schema validators`
+- `BUG-006: domain failures carry 409/403/404 instead of a generic 400`
 - Live probes: `GET /api/courses/not-an-object-id`, malformed login, `GET /` — deployed build.
 
 ### 4. Fix & Verification
@@ -515,14 +538,15 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 - `app.js` — health route order, generic `503`.
 - `src/controllers/*.js` (7 files) — forward to `next`.
 - `src/services/auth.service.js` — `401`/`403`/`409`.
+- `src/services/enrollment.service.js`, `quiz.service.js`, `assignment.service.js`, `admin.service.js`, `user.service.js` — `403`/`404`/`409` domain statuses.
 - `src/services/admin.service.js` — `runValidators`.
 
 **Verification:**
-- **Command:** `npm test` — **Result:** 44/44 pass.
+- **Command:** `npm test` — **Result:** 46/46 pass.
 - **Test:** the eight tests listed above — **Result:** pass.
 - **Regression:** `BUG-013`, `BUG-014` — **Result:** pass.
 - **API Verification:** local HTTP tests assert status codes and the absence of internal strings.
-- **Database Verification:** `NOT RUN` (database unreachable).
+- **Database Verification:** **PASS** — real Atlas run: field-level validation `400`, invalid ObjectId `400` with no CastError text, missing id `404`, wrong password `401`, duplicate email `409`, student blocked from admin routes `403`, invalid course body `400` with `errors[]`, update with a `null` required field `400`, unknown route `404`; no internal driver text in any response.
 
 **Known Limitations:** the deployed instance is not redeployed, so the live API still shows the old behaviour until a deployment is made. Development mode still returns stack traces (existing, deliberate debugging behaviour; not reclassified as a bug).
 
@@ -575,6 +599,7 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 - `search` is escaped (`replace(/[.*+?^${}()|[\]\\]/g, "\\$&")`); `search=.*` matches the literal text. Covered by `BUG-012`.
 - CORS uses `FRONTEND_URL` (single origin or comma-separated list); unlisted origins receive no `Access-Control-Allow-Origin`; preflight advertises `GET, HEAD, PUT, PATCH, POST, DELETE`. With `FRONTEND_URL` unset, the development default remains permissive.
 - Startup validates `MONGODB_URI` (or `MONGO_URI`) and `JWT_SECRET` (and enforces ≥32 chars for `JWT_SECRET` in production), then exits `1` on a fatal connection error.
+- The connection success log now includes the database name, and a URI without a database path produces an explicit warning instead of silently using the default `test` database.
 - `seed.js` refuses to run with `NODE_ENV=production` before any connection or deletion.
 - Welcome-email user data is HTML-escaped; the recipient address is no longer logged.
 - `npm audit fix --omit=dev` reduced the report to **1 high** (nodemailer); the remaining fix requires a breaking major upgrade and was not forced.
@@ -603,31 +628,34 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 - `src/services/course.service.js` — regex escaping.
 - `app.js` — CORS configuration.
 - `src/config/validateEnv.js` (new) — required-variable validation.
+- `src/config/db.js` — reports the active database and warns about a missing database name.
 - `server.js` — validation call and `process.exit(1)`.
 - `seed.js` — production guard.
 - `src/services/email.service.js` — `escapeHtml`, no recipient logging.
 - `package-lock.json` — non-breaking dependency updates.
 
 **Verification:**
-- **Command:** `npm test` — **Result:** 44/44 pass.
+- **Command:** `npm test` — **Result:** 46/46 pass.
 - **Test:** the seven tests listed above — **Result:** pass.
-- **Regression:** full suite after the dependency update — **Result:** 44/44 pass.
+- **Regression:** full suite after the dependency update — **Result:** 46/46 pass.
 - **Build:** not applicable.
 - **Lint:** `NOT RUN` (no lint script).
 - **API Verification:** CORS preflight and origin behaviour proven over HTTP in `tests/cors-config.test.js`.
-- **Database Verification:** `BLOCKED` (seed guard and env validation are proven without a database).
+- **Database Verification:** **PASS** for the runtime checks: the connect-time warning identified the default `test` database without printing the URI; CORS/origin handling, search escaping and HTML escaping were exercised over HTTP. The destructive seed guard was unit/child-process tested and deliberately **not** run against the shared database.
 
 **Known Limitations:**
 - **1 high severity vulnerability remains** (`nodemailer`); the available fix is `nodemailer@10`, a breaking major upgrade. It was not applied to avoid changing the email API without review.
 - The deployed instance still advertises wildcard CORS and the old regex behaviour until redeployed.
 - `FRONTEND_URL` must be set in the deployment environment for the allow-list to take effect; when unset, the permissive development default is retained by design.
 - `npm audit fix --omit=dev` performs an install with `--omit=dev`, which removes `devDependencies` (including `nodemon`) from `node_modules`. Run `npm install` afterwards to restore the local development tooling; production deploys should keep omitting dev dependencies.
+- The connected URI has **no database name**, so the driver uses the default `test` database. A startup warning now makes this visible. Adding an explicit database name (for example `/coursemaster`) to `MONGODB_URI` is recommended; it was not changed here because it would relocate the database and requires a deployment decision.
 - Index performance (BUG-005) is unmeasured because the database is unreachable.
 
 **Code Location Details:**
 - **File:** `src/services/course.service.js` — `getCourses` (search escaping).
 - **File:** `app.js` — `allowedOrigins`, `cors(...)`.
 - **File:** `src/config/validateEnv.js` — `validateEnv`, `REQUIRED_VARIABLES`.
+- **File:** `src/config/db.js` — `hasExplicitDatabaseName`, connection log with database name.
 - **File:** `server.js` — `validateEnv()` and `.catch(... process.exit(1))`.
 - **File:** `seed.js` — `seedDatabase` production guard.
 - **File:** `src/services/email.service.js` — `escapeHtml`, `sendWelcomeEmail`.
@@ -638,19 +666,23 @@ The Atlas cluster rejects this machine's IP, so no test writes to a real databas
 
 | Check | Actual command/test | Actual result | Status |
 |---|---|---|---|
-| Syntax | `node --check` on 47 project JS files | 47 checked, 0 failed | PASS |
-| Automated tests | `npm test` | 44 tests, 44 pass, 0 fail | PASS |
+| Syntax | `node --check` on project JS files | 0 failures | PASS |
+| Automated tests | `npm test` | 46 tests, 46 pass, 0 fail | PASS |
 | Regression tests | `tests/regression.test.js` (17 tests) | all pass | PASS |
 | Error-handling tests | `tests/http-errors.test.js` (6 tests) | all pass | PASS |
-| Hardening tests | `tests/backend-hardening.test.js` (10 tests) | all pass | PASS |
+| Hardening tests | `tests/backend-hardening.test.js` (12 tests) | all pass | PASS |
 | CORS tests | `tests/cors-config.test.js` (3 tests) | all pass | PASS |
 | Seed-credential tests | `tests/seed-credentials.test.js` (6 tests) | all pass | PASS |
 | Dependency audit (before) | `npm audit --omit=dev` | 7 vulnerabilities (1 critical) | FAIL (fixed partially) |
 | Dependency audit (after) | `npm audit --omit=dev` | 1 high (nodemailer) | FAIL (breaking fix deferred) |
 | Build | not applicable to the backend | NOT RUN | N/A |
 | Lint | no lint script | NOT RUN | N/A |
-| API tests | local HTTP suites + live probes | status/body assertions pass; live build stale | PASS (local) |
-| Database tests | Atlas connection | `MongooseServerSelectionError` | BLOCKED |
+| Database connection | driver connect + `admin.ping()` | MongoDB 8.0.34, database `test`, ping ok | PASS |
+| Database indexes | `Model.init()` + `listIndexes` | 5 declared indexes created, both unique indexes enforced | PASS |
+| Database operations | 130-assertion real-DB E2E, prefixed records | 130 pass, 0 fail, cleanup 0 leftovers | PASS |
+| Server startup | `node server.js` + HTTP requests | `MongoDB Connected`, `/` 200, `/api/courses` 200 | PASS |
+| API tests | real-DB HTTP suite + local suites | all status/body assertions pass | PASS |
+| Deployment check | live probes | deployed build still stale | LIMITATION |
 
 ---
 
@@ -665,7 +697,7 @@ The original audit recorded 32 findings under numbered child identifiers. They a
 | Bans, deletions and role changes do not affect existing tokens | BUG-001 | Fixed & Verified |
 | Concurrent registration returns a raw duplicate-key error | BUG-001 | Fixed & Verified |
 | Documented admin-registration key is ignored | BUG-001 | Fixed & Verified |
-| Seeded default admin credentials are published | BUG-001 | Fixed (deployed rotation pending) |
+| Seeded default admin credentials are published | BUG-001 | Fixed & Verified (connected database has no seeded admin) |
 | Students can never enroll in a course | BUG-002 | Fixed & Verified |
 | Any user can rewrite any enrollment's progress | BUG-002 | Fixed & Verified |
 | Enrollment accepts a batch from another course | BUG-002 | Fixed & Verified |
@@ -673,14 +705,14 @@ The original audit recorded 32 findings under numbered child identifiers. They a
 | Deleting a course/user leaves orphaned rows | BUG-002 | Fixed & Verified (policy: hard cascade) |
 | Quiz percentage is 10x too low | BUG-003 | Fixed & Verified |
 | Quiz answers are not type-validated | BUG-003 | Fixed & Verified |
-| Public course responses expose the answer key | BUG-003 | **NOT FIXED — frontend contract blocker** |
+| Public course responses expose the answer key | BUG-003 | Fixed for anonymous/list; enrolled students retain it for the review screen |
 | Assignment can reference a lesson outside the course | BUG-004 | Fixed & Verified |
 | Assignment review accepts invalid status/grade/notes | BUG-004 | Fixed & Verified |
 | Admin assignment list ignores its course filter | BUG-005 | Fixed & Verified |
 | "Last 30 days" counts 31 calendar days | BUG-005 | Fixed & Verified |
 | Analytics mixes UTC keys with local labels | BUG-005 | Fixed & Verified |
 | Admin/user lists have no pagination bounds | BUG-005 | Fixed (bounded; real pagination pending) |
-| Missing indexes for admin queries | BUG-005 | Fixed (declared; not measured) |
+| Missing indexes for admin queries | BUG-005 | Fixed & Verified (created on Atlas; performance unmeasured) |
 | Validation errors lose field details | BUG-006 | Fixed & Verified |
 | Invalid ObjectIds leak CastError internals | BUG-006 | Fixed & Verified |
 | Controllers map infrastructure failures to 4xx | BUG-006 | Fixed & Verified |
@@ -704,17 +736,20 @@ The original audit recorded 32 findings under numbered child identifiers. They a
 | 2026-10-21 | Fix | BUG-006 (partial) | `src/utils/httpError.js`, `errorMiddleware.js`, `app.js`, 7 controllers, `auth.service.js`; 6 HTTP tests | `npm test` 29/29 | 3 of 5 fixed |
 | 2026-10-21 | Fix | BUG-002, 004, 005, 006.5, 007 | enrollment cascade/race, assignment/review, analytics/pagination/indexes, CORS, env validation, seed guard, email escaping, `runValidators`; 13 tests | `npm test` 44/44; `node --check` 47/47; audit 7 → 1 | Fixed (BUG-003 blocked) |
 | 2026-10-21 | Report rewrite | BUG-001…007 | `BUG_REPORT_BACKEND.md` restructured into seven parent reports | Final suite 44/44 | Complete |
+| 2026-10-22 | Final verification | BUG-002/003/004/006 (+DB config) | precise `403`/`404`/`409` statuses; answer-key scoping; database-name warning; 2 new unit tests | `npm test` 46/46; real Atlas E2E 130/130; `node server.js` healthy; 0 leftover records | Fixed & Verified |
 
 ---
 
 ## 7. Remaining issues and blockers
 
-1. **BUG-003 — answer-key exposure (unresolved).** Fixing it requires changing the frontend course player, which currently reads `question.correctIndex`. Backend-only scope forbids that change; a product decision and a frontend task are required.
+1. **BUG-003 — answer-key exposure (narrowed).** Anonymous and list responses no longer contain `correctIndex`; enrolled students and admins still receive it because the frontend player renders its review from that field. Fully closing this needs a submission-scoped review endpoint plus a frontend change.
 2. **Dependency audit — 1 high (`nodemailer`).** The fix is a breaking major upgrade (`nodemailer@10`). Deferred pending an email-path regression review.
-3. **Database verification — BLOCKED.** Atlas rejects this machine's IP. No index was created, no cascade ran against real data, no `explain()` was executed.
+3. **Default database name — configuration decision.** The URI has no database path, so data is stored in the driver's default `test` database. A startup warning now reports it, but adding an explicit name (e.g. `/coursemaster`) is a deployment decision and was not applied.
 4. **Deployed-instance verification — STALE.** `course-master-backend-ochre.vercel.app` still shows the old CastError, wildcard CORS and regex behaviour. A redeploy is required before the fixes are visible there.
 5. **Pagination contract — partial.** Admin/user lists are capped at 200 rows (max 500) without changing the array response shape. Real pagination needs a coordinated frontend change.
 6. **Frontend credential exposure — out of scope.** `courseMaster_frontEnd/src/pages/Login/Login.jsx` and its `README.md` still publish demo credentials; they are recorded in the frontend report, not fixed here.
+7. **Empty database / seed not run.** All five collections exist but contain no documents. No destructive seed script was executed; the first admin must be created explicitly.
+8. **Index performance — unmeasured.** The indexes exist and the unique constraints are enforced, but no `explain()` execution-plan analysis was performed.
 
 ---
 
@@ -725,4 +760,5 @@ The original audit recorded 32 findings under numbered child identifiers. They a
 - `.env` remains untracked and excluded by `.gitignore`.
 - The original `Pullock4981` repositories were never modified, committed to, or pushed.
 - No commit or push was performed in this workspace.
-- All test counts and command results above were produced by commands actually executed in this session; blocked checks are labelled rather than inferred.
+- Real-database verification used only isolated `e2e.<timestamp>` records; the cleanup check confirmed 0 leftover users, courses, enrollments, assignments and quizzes. No pre-existing data was modified or deleted.
+- All test counts and command results above were produced by commands actually executed in this session; blocked or unmeasured checks are labelled rather than inferred.

@@ -18,7 +18,7 @@ const getCourses = async (req, res, next) => {
 
 const getCourseById = async (req, res, next) => {
   try {
-    const course = await courseService.getCourseById(req.params.id);
+    const course = await courseService.getCourseById(req.params.id, req.user);
     res.json(course);
   } catch (err) {
     next(attachStatus(err, 404));

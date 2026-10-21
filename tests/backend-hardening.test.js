@@ -27,6 +27,9 @@ const User = require("../src/models/User");
 const enrollmentService = require("../src/services/enrollment.service");
 const adminService = require("../src/services/admin.service");
 const userService = require("../src/services/user.service");
+const quizService = require("../src/services/quiz.service");
+const assignmentService = require("../src/services/assignment.service");
+const courseService = require("../src/services/course.service");
 const { validateEnv } = require("../src/config/validateEnv");
 const { escapeHtml } = require("../src/services/email.service");
 
@@ -213,6 +216,102 @@ test("BUG-005: indexes exist for the admin list queries", () => {
   );
   assert.ok(
     assignmentIndexes.some((index) => index.includes('"student":1') && index.includes('"course":1'))
+  );
+});
+
+/* ------------------------------ BUG-003 (answer key) ------------------------------ */
+
+test("BUG-003: the answer key is hidden from anonymous callers but kept for enrolled students and admins", async () => {
+  const makeCourse = () => ({
+    _id: courseId,
+    syllabus: [{
+      lessons: [{
+        _id: oid(9),
+        quiz: [{ question: "q", options: ["a", "b"], correctIndex: 1 }],
+      }],
+    }],
+    toObject() {
+      return JSON.parse(JSON.stringify({ _id: this._id, syllabus: this.syllabus }));
+    },
+  });
+
+  Course.findById = async () => makeCourse();
+
+  Enrollment.exists = async () => null;
+  const anonymous = await courseService.getCourseById(courseId);
+  assert.equal(anonymous.syllabus[0].lessons[0].quiz[0].correctIndex, undefined);
+
+  Enrollment.exists = async () => ({ _id: oid(7) });
+  const enrolled = await courseService.getCourseById(courseId, { id: studentId, role: "student" });
+  assert.equal(enrolled.syllabus[0].lessons[0].quiz[0].correctIndex, 1);
+
+  const admin = await courseService.getCourseById(courseId, { id: oid(4), role: "admin" });
+  assert.equal(admin.syllabus[0].lessons[0].quiz[0].correctIndex, 1);
+
+  // list responses never carry the key, even for an enrolled caller
+  const chain = {
+    sort: () => chain,
+    skip: () => chain,
+    limit: async () => [makeCourse()],
+  };
+  Course.find = () => chain;
+  Course.countDocuments = async () => 1;
+
+  const list = await courseService.getCourses({});
+  assert.equal(list.courses[0].syllabus[0].lessons[0].quiz[0].correctIndex, undefined);
+});
+
+/* ------------------------------ BUG-006 (status mapping) ------------------------------ */
+
+test("BUG-006: domain failures carry 409/403/404 instead of a generic 400", async () => {
+  Course.findById = async () => ({ _id: courseId, batches: [] });
+
+  // duplicate enrollment detected by the pre-check
+  Enrollment.findOne = async () => ({ _id: oid(7) });
+  await assert.rejects(
+    enrollmentService.enrollCourse(studentId, courseId),
+    (err) => err.status === 409
+  );
+
+  // missing enrollment
+  Enrollment.findById = async () => null;
+  await assert.rejects(
+    enrollmentService.completeLesson(oid(8), oid(9), studentId),
+    (err) => err.status === 404
+  );
+
+  // someone else's enrollment
+  Enrollment.findById = async () => ({ _id: oid(8), student: oid(4), course: courseId });
+  await assert.rejects(
+    enrollmentService.completeLesson(oid(8), oid(9), studentId),
+    (err) => err.status === 403
+  );
+
+  // quiz / assignment require enrollment
+  Enrollment.findOne = async () => null;
+  await assert.rejects(
+    quizService.submitQuiz(studentId, { courseId, lessonId: oid(9), answers: [0] }),
+    (err) => err.status === 403
+  );
+  await assert.rejects(
+    assignmentService.submitAssignment(studentId, {
+      courseId,
+      lessonId: oid(9),
+      answerType: "text",
+      answer: "x",
+    }),
+    (err) => err.status === 403
+  );
+
+  // missing assignment submission
+  const chain = {
+    populate: () => chain,
+    then: (resolve) => resolve(null),
+  };
+  AssignmentSubmission.findByIdAndUpdate = () => chain;
+  await assert.rejects(
+    adminService.reviewAssignment(oid(9), { grade: 10 }, studentId),
+    (err) => err.status === 404
   );
 });
 

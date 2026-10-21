@@ -28,7 +28,6 @@ connectDB().catch((err) => {
 const app = express();
 
 // FRONTEND_URL may hold one origin or a comma-separated list. When it is not
-// configured (local development) the previous permissive behaviour is kept.
 const allowedOrigins = (process.env.FRONTEND_URL || "")
   .split(",")
   .map((origin) => origin.trim())

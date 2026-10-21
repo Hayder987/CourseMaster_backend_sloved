@@ -1,20 +1,21 @@
 const Course = require("../models/Course");
 const Enrollment = require("../models/Enrollment");
 const QuizSubmission = require("../models/QuizSubmission");
+const { httpError } = require("../utils/httpError");
 
 const submitQuiz = async (studentId, payload) => {
   const { courseId, lessonId, answers } = payload;
   // answers = [selectedIndex, selectedIndex, ...]
 
   if (!Array.isArray(answers) || !answers.every((answer) => Number.isInteger(answer))) {
-    throw new Error("answers must be an array of option indices");
+    throw httpError(400, "answers must be an array of option indices");
   }
 
   const enrolled = await Enrollment.findOne({ student: studentId, course: courseId });
-  if (!enrolled) throw new Error("You are not enrolled in this course");
+  if (!enrolled) throw httpError(403, "You are not enrolled in this course");
 
   const course = await Course.findById(courseId);
-  if (!course) throw new Error("Course not found");
+  if (!course) throw httpError(404, "Course not found");
 
   // find lesson quiz
   let quiz = null;
@@ -25,8 +26,8 @@ const submitQuiz = async (studentId, payload) => {
       break;
     }
   }
-  if (!quiz) throw new Error("Lesson not found");
-  if (quiz.length === 0) throw new Error("No quiz in this lesson");
+  if (!quiz) throw httpError(404, "Lesson not found");
+  if (quiz.length === 0) throw httpError(400, "No quiz in this lesson");
 
   let score = 0;
   quiz.forEach((q, i) => {
