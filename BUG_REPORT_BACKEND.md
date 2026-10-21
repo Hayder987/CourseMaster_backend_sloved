@@ -4,7 +4,7 @@
 **Branch / commit:** `main` @ `c060b62`
 **Audit date:** 2026-10-21
 **Stack:** Node.js + Express 5 + Mongoose 9 + JWT + bcrypt + Zod
-**Phase:** B — BUG-001, BUG-002 and BUG-003 fixed and verified. BUG-004 … BUG-006 remain unresolved and require separate approval.
+**Phase:** B — all six confirmed groups (BUG-001 … BUG-006) fixed and verified. No application change is pending approval.
 
 ## Scope and method
 
@@ -28,9 +28,9 @@ Because of the above, every finding below is either (a) observed directly by exe
 | BUG-001 | Login rejects every valid credential | Critical | P1 | Yes (service + HTTP) | **Fixed & Verified** |
 | BUG-002 | Invalid/expired JWT does not stop the request (authentication bypass) | Critical | P1 | Yes (HTTP) | **Fixed & Verified** |
 | BUG-003 | Students can never enroll in a course | High | P1 | Yes (service + HTTP) | **Fixed & Verified** |
-| BUG-004 | Any user can rewrite any enrollment's progress; progress can exceed 100% | High | P2 | Yes (HTTP + service) | Unresolved |
-| BUG-005 | Quiz percentage is 10× too low | High | P2 | Yes (service level) | Unresolved |
-| BUG-006 | Documented admin-registration key is ignored | Medium | P3 | Yes (service level) | Unresolved |
+| BUG-004 | Any user can rewrite any enrollment's progress; progress can exceed 100% | High | P2 | Yes (HTTP + service) | **Fixed & Verified** |
+| BUG-005 | Quiz percentage is 10× too low | High | P2 | Yes (service + HTTP) | **Fixed & Verified** |
+| BUG-006 | Documented admin-registration key is ignored | Medium | P3 | Yes (service + HTTP) | **Fixed & Verified** |
 
 ---
 
@@ -170,7 +170,7 @@ Status: Fixed & Verified
 **1. Location & Steps**  
 Page: `PATCH /api/enrollments/:enrollId/complete-lesson`  
 File: `src/services/enrollment.service.js` (also `src/controllers/enrollment.controller.js`, `src/routes/enrollment.routes.js`)  
-Code Location: `completeLesson()` lines 36–63 (no ownership check lines 37–38; `enrollment.save()` not awaited line 61); controller lines 25–35 (never passes `req.user.id`)  
+Code Location: `completeLesson()` (pre-fix lines 35–62: no ownership check 36–37, no lesson validation, `enrollment.save()` not awaited at line 60; post-fix lines 35–78: ownership 39–42, lesson validation 48–57, awaited save 76); controller lines 25–36 (caller identity passed at line 30)  
 Steps:  
 1. Log in as student A and obtain A's token.
 2. Send `PATCH /api/enrollments/<student B's enrollId>/complete-lesson` with A's token and a `lessonId`.
@@ -178,16 +178,38 @@ Steps:
 
 **2. Expected vs. Actual**  
 Expected: only the owner of the enrollment may update it; the lesson must exist in that course; the write must be awaited so failures are reported.  
-Actual: `completeLesson(enrollId, lessonId)` receives no caller identity, so any authenticated caller can modify any enrollment (before BUG-002 was fixed, even an unauthenticated caller could). Executed with student A's token against student B's enrollment: **200 OK** with the document modified. Lesson IDs are never validated against the course: an arbitrary ID is appended to `completedLessons` and counted in the percentage — executed: a 1-lesson course with 4 arbitrary lesson IDs reported **percent=400**. `enrollment.save()` is not awaited, so a rejected write still returns success while raising an unhandled rejection — executed: `returned percent=100, unhandledRejection="simulated Mongo write failure"`.
+Actual (before fix): `completeLesson(enrollId, lessonId)` received no caller identity, so any authenticated caller could modify any enrollment (and, before BUG-002, even an unauthenticated caller). Executed with student A's token against student B's enrollment: **200 OK** with the document modified. Lesson IDs were never validated against the course: an arbitrary ID was appended to `completedLessons` and counted — executed: a 1-lesson course with 4 arbitrary lesson IDs reported **percent=400**. `enrollment.save()` was not awaited, so a rejected write still returned success while raising an unhandled rejection — executed: `returned percent=100, unhandledRejection="simulated Mongo write failure"`.  
+Actual (after fix): the controller passes `req.user.id`; a non-owner request returns `400 Not authorized for this enrollment` with no write; a lesson outside the course returns `400 Lesson not found in this course`; the percentage counts only lessons that belong to the course (legacy bogus IDs no longer inflate it); and a failed `save()` now rejects to the caller with no unhandled rejection.
 
 **3. Severity & Evidence**  
 Severity: High (broken access control + silent data loss + corrupt progress)  
 Priority: P2  
-Screenshot / Error: IDOR: `status=200` on another student's enrollment (`owner=…664`, caller `…663`). Percentage: `percent for 1-lesson course with 4 arbitrary lessonIds = 400`. Persistence: `returned percent=100, unhandledRejection="simulated Mongo write failure"`.
+Screenshot / Error: Before fix — IDOR: `status=200` on another student's enrollment (`owner=…664`, caller `…663`); percentage: `percent for 1-lesson course with 4 arbitrary lessonIds = 400`; persistence: `returned percent=100, unhandledRejection="simulated Mongo write failure"`. After fix — `status=400 {"message":"Not authorized for this enrollment"} saveCalls=0`; `REJECTED to caller (save awaited): simulated Mongo write failure, unhandledRejection=null`; legacy bogus progress normalised to `percent=50`.
 
 **4. Fix & Verification**  
-Fix (proposed): pass `req.user.id` from the controller; load the enrollment, reject when `String(enrollment.student) !== String(userId)`; verify `lessonId` exists in the enrollment's course syllabus before appending; `await enrollment.save()` (and `await`/guard the missing-course case).  
-Status: Unresolved
+Fix (applied): controller passes `req.user.id` to `completeLesson(enrollId, lessonId, studentId)`; the service rejects when the enrollment's `student` differs from the caller; it loads the course (guarding a missing course), flattens the syllabus, rejects a `lessonId` that is not part of that course, counts only course lessons when computing the percentage, and `await`s `enrollment.save()`.  
+Status: Fixed & Verified
+
+**Changed Files:**
+- `src/services/enrollment.service.js` — ownership check, lesson validation, course guard, valid-lesson percentage, awaited save.
+- `src/controllers/enrollment.controller.js` — forwards `req.user.id` to the service.
+
+**Verification:**
+- Command: `node --check src/services/enrollment.service.js` and `node --check src/controllers/enrollment.controller.js` — Result: exit code 0 for both.
+- Command: `node %TEMP%\cm-audit\verify-bug004.js` — Result: `12/12 checks passed` (owner update, non-owner blocked without write, foreign lesson blocked, duplicate handling, save failure surfaced with no unhandled rejection, legacy bogus IDs normalised, missing enrollment/course, HTTP 200/400/401).
+- Regression: `verify-bug001.js` `10/10`, `verify-bug002.js` `10/10`, `verify-bug003.js` `10/10`.
+- Regression: `node %TEMP%\cm-audit\audit.js` — Result: T6 now `REJECTED to caller (save awaited)`; T13 now `status=400 Not authorized`; all other observations unchanged.
+- Remaining limitation: no real MongoDB integration test. The non-owner response is `400` (the controller's existing error contract) rather than `403`; changing that would alter the API contract, so it was left as-is.
+
+**Code Location Details:**
+- File: `src/services/enrollment.service.js`
+- Function/Method: `completeLesson()`
+- Lines (post-fix): 35–78 (ownership 39–42, lesson validation 48–57, awaited save 76)
+- File: `src/controllers/enrollment.controller.js`
+- Function/Method: `completeLesson()`
+- Lines: 25–36 (`req.user.id` at line 30)
+- Change summary: caller identity enforced, lesson validated against the course, percentage based on valid lessons, save awaited.
+
 
 ---
 
@@ -196,7 +218,7 @@ Status: Unresolved
 **1. Location & Steps**  
 Page: `POST /api/quizzes/submit` (and consequently `GET /api/quizzes/stats`)  
 File: `src/services/quiz.service.js`  
-Code Location: `submitQuiz()` line 34 (`const percent = Math.round((score / total) * 10);`), persisted at line 55, returned at line 67; consumed by `getQuizStats()` lines 108–119  
+Code Location: `submitQuiz()` (pre-fix: comment line 33, wrong calculation line 34; post-fix: line 33), persisted at line 54, returned at line 66; consumed by `getQuizStats()` lines 107–118  
 Steps:  
 1. Enroll a student in a course whose lesson has a 2-question quiz.
 2. `POST /api/quizzes/submit` with both answers correct (`[1,1]` for `correctIndex: 1`).
@@ -204,16 +226,34 @@ Steps:
 
 **2. Expected vs. Actual**  
 Expected: 2/2 correct → `percent: 100` (README example shows `score: 3` of `total: 4` → `percent: 75`).  
-Actual: the score is divided then multiplied by **10** instead of 100, so 2/2 yields `percent: 10`. The wrong value is written to `QuizSubmission.percent`, so quiz statistics and dashboard averages are also wrong. Executed: `score=2/2, percent=10`.
+Actual (before fix): the score was divided then multiplied by **10** instead of 100, so 2/2 yielded `percent: 10`. The wrong value was written to `QuizSubmission.percent`, so quiz statistics and dashboard averages were also wrong. Executed: `score=2/2, percent=10`.  
+Actual (after fix): 2/2 → `100`, 1/2 → `50`, 0/2 → `0`, 2/3 → `67` (rounded); the persisted document stores the corrected value and `getQuizStats()` averages it correctly. Historical submissions created before this fix still contain their old wrong percentages (no data migration was performed).
 
 **3. Severity & Evidence**  
-Severity: High (correct answers are persisted as near-failing scores)  
+Severity: High (correct answers were persisted as near-failing scores)  
 Priority: P2  
-Screenshot / Error: `score=2/2, percent=10`.
+Screenshot / Error: Before — `score=2/2, percent=10`. After — `PASS [V1] 2/2 correct -> 100%`; `PASS [V10] HTTP quiz submit 2/2 -> status=200 score=2/2 percent=100`.
 
 **4. Fix & Verification**  
-Fix (proposed): multiply by 100 (`Math.round((score / total) * 100)`). Existing stored documents keep their old values; no data migration is proposed in this phase.  
-Status: Unresolved
+Fix (applied): changed the multiplier from `10` to `100` in `submitQuiz()`.  
+Status: Fixed & Verified
+
+**Changed Files:**
+- `src/services/quiz.service.js` — correct percentage formula.
+
+**Verification:**
+- Command: `node --check src/services/quiz.service.js` — Result: exit code 0.
+- Command: `node %TEMP%\cm-audit\verify-bug005.js` — Result: `11/11 checks passed` (100/50/0/67 cases, partial answers, persisted value, stats average, no-quiz and not-enrolled regressions, HTTP 200 + 401).
+- Regression: `verify-bug001.js` `10/10`, `verify-bug002.js` `10/10`, `verify-bug003.js` `10/10`, `verify-bug004.js` `12/12`.
+- Regression: `node %TEMP%\cm-audit\audit.js` — Result: T5 changed from `percent=10` to `percent=100`; all other observations unchanged.
+- Remaining limitation: historical `QuizSubmission` rows keep their old values; no migration was requested or performed. No real MongoDB integration test.
+
+**Code Location Details:**
+- File: `src/services/quiz.service.js`
+- Function/Method: `submitQuiz()`
+- Lines (post-fix): 32–33, persisted 54, returned 66
+- Change summary: `(score / total) * 10` → `(score / total) * 100`.
+
 
 ---
 
@@ -222,7 +262,7 @@ Status: Unresolved
 **1. Location & Steps**  
 Page: `POST /api/auth/register`  
 File: `src/services/auth.service.js` (schema: `src/validators/auth.validation.js`)  
-Code Location: `register()` line 8 (destructures `adminKey`, never uses it) and lines 14–20 (`role: role || "student"`); `adminKey` accepted at `src/validators/auth.validation.js:9`; `ADMIN_REGISTRATION_KEY` is referenced nowhere in `src/`  
+Code Location: `register()` (pre-fix line 8 destructured `adminKey` and never used it; lines 14–20 used `role || "student"`; post-fix: `matchesAdminKey()` 13–16, `resolveRegistrationRole()` 19–27, `register()` 29–55); `adminKey` accepted at `src/validators/auth.validation.js:9`; `ADMIN_REGISTRATION_KEY` was referenced nowhere in `src/`  
 Steps:  
 1. `POST /api/auth/register` with `{ name, email, password, adminKey: "<the configured admin key>" }`.
 2. Inspect the created user's `role`.
@@ -230,24 +270,41 @@ Steps:
 
 **2. Expected vs. Actual**  
 Expected (per `README.md`): a valid `adminKey` matching `ADMIN_REGISTRATION_KEY` creates an `admin`; an invalid one fails; the key feature is disabled when the variable is unset.  
-Actual: `adminKey` is destructured and discarded, so every registration creates a `student` and the documented admin flow silently does nothing. Executed: `created role="student"` even with an admin key supplied.  
-Note: the direct `role` field is **not** exploitable over HTTP — Zod strips unknown keys (verified: parsed keys = `["name","email","password"]`), so this is not a privilege-escalation hole today, only a broken documented feature and fragile code.
+Actual (before fix): `adminKey` was destructured and discarded, so every registration created a `student` and the documented admin flow silently did nothing. Executed: `created role="student"` even with an admin key supplied.  
+Actual (after fix): valid key → `admin` (in the user document and the JWT); wrong key → `400 Invalid admin key` with no user created; key supplied while the variable is unset → `400 Admin registration is disabled`; no key → `student` as before. The `role` field is no longer part of the service signature, so it cannot be used to escalate even if validation changes.
 
 **3. Severity & Evidence**  
 Severity: Medium  
 Priority: P3  
-Screenshot / Error: `created role="student" (env ADMIN_REGISTRATION_KEY not consulted)`; `grep ADMIN_REGISTRATION_KEY src/` → no matches.
+Screenshot / Error: Before — `created role="student" (env ADMIN_REGISTRATION_KEY not consulted)`; `grep ADMIN_REGISTRATION_KEY src/` → no matches. After — `created role="admin" token role="admin"`; invalid key → `error="Invalid admin key" createCalls=0`; unset env → `error="Admin registration is disabled" createCalls=0`.
 
 **4. Fix & Verification**  
-Fix (proposed): in `register()`, remove `role` from the payload path; if `adminKey` is supplied, compare it with `process.env.ADMIN_REGISTRATION_KEY` using a timing-safe comparison, grant `admin` only on a match, and reject when the key is absent/misconfigured or does not match; otherwise default to `student`.  
-Status: Unresolved
+Fix (applied): added `resolveRegistrationRole()` which keeps `student` when no key is supplied, rejects when `ADMIN_REGISTRATION_KEY` is unset or does not match (constant-time SHA-256 comparison via `crypto.timingSafeEqual`), and returns `admin` only on a match; removed `role` from the `register()` payload destructuring.  
+Status: Fixed & Verified
+
+**Changed Files:**
+- `src/services/auth.service.js` — implemented admin-key resolution and removed the direct `role` input path.
+
+**Verification:**
+- Command: `node --check src/services/auth.service.js` — Result: exit code 0.
+- Command: `node %TEMP%\cm-audit\verify-bug006.js` — Result: `12/12 checks passed` (no key, valid key, invalid key, unset env, role injection at service and HTTP level, email normalization, duplicate email, HTTP 201/400, BUG-001 login regression).
+- Regression: `verify-bug001.js` `10/10`, `verify-bug002.js` `10/10`, `verify-bug003.js` `10/10`, `verify-bug004.js` `12/12`, `verify-bug005.js` `11/11`.
+- Regression: `node %TEMP%\cm-audit\audit.js` — Result: T3 now `REJECTED: Admin registration is disabled` (env unset) and T3c `created role="admin"` (matching key); all other observations unchanged.
+- Remaining limitation: `.env` in this workspace has no `ADMIN_REGISTRATION_KEY`, so the happy path was verified with a test key in-process; enabling the feature in a real deployment requires setting that variable. No real MongoDB integration test.
+
+**Code Location Details:**
+- File: `src/services/auth.service.js`
+- Function/Method: `matchesAdminKey()`, `resolveRegistrationRole()`, `register()`
+- Lines (post-fix): 13–16, 19–27, 29–55 (role resolution at 34)
+- Change summary: documented admin-key flow implemented; direct role input removed.
+
 
 ---
 
 ## Checked and NOT confirmed (do not fix as a bug)
 
 1. **CORS blocks PUT/PATCH/DELETE (`// Code-10 bug` in `app.js:29`)** — **Not a defect.** `cors()` handles preflight itself and terminates it before the custom middleware runs. Executed `OPTIONS /api/enrollments/:id/complete-lesson` with `Origin` + `Access-Control-Request-Method: PATCH` → `204`, `access-control-allow-methods: GET,HEAD,PUT,PATCH,POST,DELETE`, `access-control-allow-origin: *`. The custom `Access-Control-Allow-Methods: GET, POST` is only written on non-preflight responses, where browsers ignore it. No functional impact; no fix proposed (removing the misleading header would be cosmetic).
-2. **Role injection via registration (`// Code-12 bug`)** — **Not exploitable over HTTP.** `validate(registerSchema)` replaces `req.body` with the parsed object and Zod strips `role` (verified). Keep in mind only as defence-in-depth (covered by BUG-006's fix).
+2. **Role injection via registration (`// Code-12 bug`)** — **Not exploitable over HTTP.** `validate(registerSchema)` replaces `req.body` with the parsed object and Zod strips `role` (verified). The vulnerable-looking `role` input path was removed anyway as part of the BUG-006 fix.
 3. **Public quiz answer key** — `GET /api/courses/:id` returns `quiz[].correctIndex` (verified in the response). It is a real exposure, but the frontend depends on it for client-side grading/review (`CoursePlayer.jsx` lines 706, 746, 762, 782, 866, 887). Removing it requires a frontend change or a separate answer-review endpoint, i.e. an owner/product decision. Not fixed in this phase.
 4. **Missing rate limiting, refresh tokens, pagination on admin lists** — not implemented anywhere; treated as unimplemented product scope, not defects.
 
@@ -343,13 +400,100 @@ PASS [V10] invalid token still rejected -> status=401
 
 After the fix, `audit.js` reports T4 as `SUCCESS (enrollment created)`; all other observations are unchanged.
 
+### BUG-004 post-fix run (`%TEMP%\cm-audit\verify-bug004.js`)
+
+```
+PASS [V1] owner completes valid lesson -> percent=50 saveCalls=1
+PASS [V2] other student cannot update enrollment -> error="Not authorized for this enrollment" saveCalls=0 completed=0
+PASS [V3] lesson outside the course is rejected -> error="Lesson not found in this course" saveCalls=0
+PASS [V4] duplicate lesson completion -> completed length=1 percent=50
+PASS [V5] save failure is surfaced to the caller -> error="simulated Mongo write failure" unhandledRejection=null
+PASS [V6] legacy bogus ids do not inflate percent -> percent=100
+PASS [V7] missing enrollment -> error="Enrollment not found"
+PASS [V8] missing course -> error="Course not found" saveCalls=0
+PASS [V9] HTTP owner completes lesson -> status=200 saveCalls=1
+PASS [V10] HTTP student cannot touch another enrollment -> status=400 saveCalls=0
+PASS [V11] invalid token still rejected -> status=401
+PASS [V12] HTTP legacy bogus progress normalised -> status=200 percent=50
+
+12/12 checks passed
+```
+
+After the fix, `audit.js` reports T6 as `REJECTED to caller (save awaited)` and T13 as `status=400 Not authorized`; all other observations are unchanged.
+
+### BUG-005 post-fix run (`%TEMP%\cm-audit\verify-bug005.js`)
+
+```
+PASS [V1] 2/2 correct -> 100%
+PASS [V2] 1/2 correct -> 50%
+PASS [V3] 0/2 correct -> 0%
+PASS [V4] partial answers -> 50% (unanswered counted wrong)
+PASS [V5] persisted percent matches response
+PASS [V6] 2/3 correct -> 67% (rounded)
+PASS [V7] quiz stats average -> average=75 totalQuizzes=2
+PASS [V8] lesson without quiz -> error="No quiz in this lesson"
+PASS [V9] un enrolled student -> error="You are not enrolled in this course"
+PASS [V10] HTTP quiz submit 2/2 -> status=200 score=2/2 percent=100
+PASS [V11] invalid token still rejected -> status=401
+
+11/11 checks passed
+```
+
+After the fix, `audit.js` reports T5 as `score=2/2, percent=100`; all other observations are unchanged.
+
+### BUG-006 post-fix run (`%TEMP%\cm-audit\verify-bug006.js`)
+
+```
+PASS [V1] registration without adminKey -> student
+PASS [V2] registration with valid adminKey -> admin (created role + token role)
+PASS [V3] invalid adminKey rejected, no user created
+PASS [V4] admin registration disabled when env unset
+PASS [V5] role field in service payload ignored
+PASS [V6] email normalization preserved
+PASS [V7] duplicate email still rejected
+PASS [V8] HTTP register with valid adminKey -> status=201 role=admin
+PASS [V9] HTTP register with invalid adminKey -> status=400 createCalls=0
+PASS [V10] HTTP register without adminKey -> status=201 role=student
+PASS [V11] HTTP role injection still stripped -> status=201 role=student
+PASS [V12] BUG-001 login regression -> status=200
+
+12/12 checks passed
+```
+
+After the fix, `audit.js` reports T3 as `REJECTED: Admin registration is disabled` and T3c as `created role="admin"`; all other observations are unchanged.
+
 ## Fix log
 
-| Date | Bug | Changed file | Status |
-|------|-----|--------------|--------|
+| Date | Bug | Changed file(s) | Status |
+|------|-----|-----------------|--------|
 | 2026-10-21 | BUG-001 | `src/services/auth.service.js` | Fixed & Verified (10/10 targeted checks, `node --check` clean) |
 | 2026-10-21 | BUG-002 | `src/middlewares/authMiddleware.js` | Fixed & Verified (10/10 targeted checks + BUG-001 regression, `node --check` clean) |
 | 2026-10-21 | BUG-003 | `src/services/enrollment.service.js` | Fixed & Verified (10/10 targeted checks + BUG-001/002 regression, `node --check` clean) |
+| 2026-10-21 | BUG-004 | `src/services/enrollment.service.js`, `src/controllers/enrollment.controller.js` | Fixed & Verified (12/12 targeted checks + BUG-001/002/003 regression, `node --check` clean) |
+| 2026-10-21 | BUG-005 | `src/services/quiz.service.js` | Fixed & Verified (11/11 targeted checks + BUG-001…004 regression, `node --check` clean) |
+| 2026-10-21 | BUG-006 | `src/services/auth.service.js` | Fixed & Verified (12/12 targeted checks + BUG-001…005 regression, `node --check` clean) |
+
+## Final summary
+
+**Groups addressed:** 6 of 6 confirmed groups (BUG-001 … BUG-006), all `Fixed & Verified`.
+
+**Changed application files (5):**
+- `src/services/auth.service.js` — login verification, email normalization, ban check (BUG-001); admin-key flow (BUG-006).
+- `src/middlewares/authMiddleware.js` — 401 on invalid/expired JWT (BUG-002).
+- `src/services/enrollment.service.js` — enrollment creation (BUG-003); progress authorization/validation/await (BUG-004).
+- `src/controllers/enrollment.controller.js` — forward `req.user.id` (BUG-004).
+- `src/services/quiz.service.js` — quiz percentage (BUG-005).
+
+**Tests/checks that passed:** `node --check` on every changed file; targeted harnesses `verify-bug001.js` 10/10, `verify-bug002.js` 10/10, `verify-bug003.js` 10/10, `verify-bug004.js` 12/12, `verify-bug005.js` 11/11, `verify-bug006.js` 12/12; general `audit.js` re-run shows only the intended changes.
+
+**Checks that could not run:** no `npm test`/lint/type-check/build exists in `package.json`; no MongoDB/Docker available; `node server.js` still exits because `MONGODB_URI`/`JWT_SECRET` are missing from `.env`.
+
+**Remaining unresolved / deferred findings:** admin assignment filter (Medium), orphaned records on delete (Medium), stale 30-day token privileges (Medium), public quiz `correctIndex` (product decision), unescaped search regex (Low), validation-error payload details (Low), documentation/`.env.example` mismatch (Low). Historical quiz submissions and enrollments keep pre-fix values; no data migration was performed.
+
+**Not committed or pushed.** `git status --short` shows only the five changed source files plus this report.
+
+
+
 
 
 
